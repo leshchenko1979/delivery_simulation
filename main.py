@@ -4,15 +4,14 @@ import itertools
 import logging
 import os
 import random
-import sys
 
 import simpy
 import tqdm
 
 from utils import *
 from parcel import ParcelGenerator
-from wh_closest_courier import WarehouseManager
-from td_tsp_central_wh import TruckDispatcher
+from warehouses import WarehouseManager
+from td_petals import TruckDispatcher
 from metrics import MetricsManager
 
 class DeliveryEnvironment(simpy.Environment):
@@ -53,11 +52,7 @@ class DeliveryEnvironment(simpy.Environment):
         handler = logging.FileHandler(log_path, encoding='utf-8')
         handler.setFormatter(formatter)
         self.log.addHandler(handler)
-
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(formatter)
-        self.log.addHandler(handler)
-
+        
 
     def read_config(self):
         config = configparser.ConfigParser()

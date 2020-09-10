@@ -56,6 +56,8 @@ class MetricsManager:
         pd.DataFrame(self.metrics_log).to_csv(f'metrics/{self.results_timestamp}.csv', index = None)
 
         results = self.prepare_results()
+        self.log_metrics_to_console(results)
+
 
         try:
             df = pd.read_csv('simulations.csv')

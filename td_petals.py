@@ -3,48 +3,34 @@ import collections
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 
-from base import SimulationObject
-from truck import Truck
-from utils import succeed, dist
+from base import DispatcherAbstract, ParcelMover
+from utils import dist
 
 
-class TruckDispatcher(SimulationObject):
+class TruckDispatcher(DispatcherAbstract):
 
     object_type = 'Диспетчер грузовиков'
     version = __name__
 
         
     def __init__(self, env):
-        super().__init__(env, 1, 0, 0)
+        super().__init__(env, None)
 
-        self.dispatch_requests = collections.deque()
-        self.trucks_awaiting_dispatch_present = env.event()
-
-        self.whs = self.env.warehouse_manager.warehouses
+        self.whs = env.warehouse_manager.warehouses
         self.wh_dist_matrix = [[p1.dist(p2) for p2 in self.whs] for p1 in self.whs]
         self.central_wh = min(self.whs, key = lambda wh: dist(wh.x, wh.y, 0, 0))
+        self.central_wh.name = f'{self.central_wh.name} (Центральный)'
         
-        self.trucks = [Truck(env, x, self.central_wh) for x in range(env.TRUCKS_NUMBER)]
+        self.trucks = [ParcelMover(env, 'Грузовик', env.TRUCK_SPEED_KMH, x, self, self.central_wh) 
+                       for x in range(env.TRUCKS_NUMBER)]
 
         self.debug('Рассчитываю шаблонные маршруты грузовиков')
         self.compose_routes()
-        
-        self.env.process(self.run())
 
 
-    def run(self):
-        for r in self.routes:
-            r.assign_next_segment()
+    def cycle_start_event(self):
+        return self.movers_awaiting_dispatch_present
     
-        while True:
-            yield self.trucks_awaiting_dispatch_present
-
-            self.debug('Найден свободный грузовик, нужно выдать распоряжение')
-
-            truck = self.pop_free_truck()
-            route = self.find_route(truck)
-            route.assign_next_segment()
-        
 
     def compose_routes(self):
 
@@ -55,7 +41,6 @@ class TruckDispatcher(SimulationObject):
 
         # Create Routing Model.
         routing = pywrapcp.RoutingModel(manager)
-
 
         # Create and register a transit callback.
         def distance_callback(from_index, to_index):
@@ -83,7 +68,6 @@ class TruckDispatcher(SimulationObject):
         distance_dimension.SetGlobalSpanCostCoefficient(10000)
         # [END distance_constraint]
 
-
         # Setting first solution heuristic.
         search_parameters = pywrapcp.DefaultRoutingSearchParameters()
         search_parameters.first_solution_strategy = (
@@ -103,29 +87,23 @@ class TruckDispatcher(SimulationObject):
                     segments.append(self.whs[node_index])
                     index = solution.Value(routing.NextVar(index))
                 segments.rotate(-1)
-                self.routes.append(Route(self, truck, segments))
+                self.routes.append(CircularRoute(self, truck, segments))
                 
         else:
             raise RuntimeError('Не могу построить маршруты грузовиков')
 
+        for r in self.routes:
+            r.assign_next_segment()
+    
+
+    def assign_task(self, mover):
+        route = self.find_route(mover)
+        route.assign_next_segment()
+        
 
     def find_route(self, truck):
         return self.routes[[r.truck for r in self.routes].index(truck)]
 
-
-    def pop_free_truck(self):
-        truck = self.dispatch_requests.popleft()
-        if len(self.dispatch_requests) == 0:
-            self.trucks_awaiting_dispatch_present = self.env.event()
-        return truck
-        
-        
-    def request_dispatch(self, truck):
-        self.debug(f'{truck} запросил задачу')
-
-        succeed(self.trucks_awaiting_dispatch_present)
-        self.dispatch_requests.append(truck)
-        
 
     def post_metrics(self, m):
         m['trucks_empty'] = len([t for t in self.trucks if len(t.parcels_in_hold) == 0])
@@ -154,7 +132,7 @@ class TruckDispatcher(SimulationObject):
             m['parcels_delivered_direct_dist_total'] / total_odo                
 
         
-class Route:
+class CircularRoute:
     
     def __init__(self, td, truck, segments):
         self.td = td
@@ -170,7 +148,7 @@ class Route:
         if len(self.segments) == 1:
             return
         
-        current_wh = t.current_wh
+        current_wh = t.current_storage
         central_wh = self.td.central_wh        
         
         target_wh = self.segments[0]
@@ -180,10 +158,10 @@ class Route:
             self.td.debug(f'Отдаю задачу {self.truck} ехать на {target_wh}')
             
             if current_wh == central_wh:
-                to_load = {p for p in central_wh.get_parcels_awaiting_assignment()
+                to_load = {p for p in central_wh.get_parcels_awaiting_trucks()
                            if p.last_mile_wh in self.peripheral_whs}
             else:
-                to_load = current_wh.get_parcels_awaiting_assignment()
+                to_load = current_wh.get_parcels_awaiting_trucks()
             
             resulting_parcels = to_load | t.parcels_in_hold
 
